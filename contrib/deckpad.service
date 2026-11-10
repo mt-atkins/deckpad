@@ -1,0 +1,13 @@
+# systemd user unit. Install:
+#   cargo install --path .
+#   cp contrib/deckpad.service ~/.config/systemd/user/
+#   systemctl --user enable --now deckpad
+[Unit]
+Description=deckpad Stream Deck daemon
+
+[Service]
+ExecStart=%h/.cargo/bin/deckpad
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

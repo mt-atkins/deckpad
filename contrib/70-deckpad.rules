@@ -1,0 +1,6 @@
+# Lets the logged-in user talk to Elgato Stream Decks and create virtual
+# input devices (deck-mode key combos, gamepad mode).
+# Install: sudo cp contrib/70-deckpad.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload && sudo udevadm trigger
+KERNEL=="hidraw*", ATTRS{idVendor}=="0fd9", TAG+="uaccess"
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

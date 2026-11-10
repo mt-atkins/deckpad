@@ -1,0 +1,233 @@
+# deckpad configuration.
+# Copy to ~/.config/deckpad/config.toml and edit (it replaces these defaults).
+#
+# Keys are numbered left-to-right, top-to-bottom, starting at 0.
+# On a 15-key Stream Deck:   0  1  2  3  4
+#                            5  6  7  8  9
+#                           10 11 12 13 14
+
+brightness = 60          # 0-100
+start_mode = "deck"      # deck | gamepad | drum
+mode_key = 10            # pressing this key cycles deck -> gamepad -> drum
+# font = "/usr/share/fonts/google-noto/NotoSans-Bold.ttf"   # default: system bold sans
+
+# ---------------------------------------------------------------- deck mode
+# Each key does one of:
+#   keys    = "ctrl+shift+t"   key combo (evdev names, KEY_ prefix optional)
+#   command = "firefox"        shell command
+#   mode    = "drum"           jump straight to a mode
+[[deck.keys]]
+key = 0
+label = "PREV"
+color = "#3b5bdb"
+keys = "previoussong"
+
+[[deck.keys]]
+key = 1
+label = "PLAY"
+color = "#2f9e44"
+keys = "playpause"
+
+[[deck.keys]]
+key = 2
+label = "NEXT"
+color = "#3b5bdb"
+keys = "nextsong"
+
+[[deck.keys]]
+key = 3
+label = "VOL -"
+color = "#5f3dc4"
+keys = "volumedown"
+
+[[deck.keys]]
+key = 4
+label = "VOL +"
+color = "#5f3dc4"
+keys = "volumeup"
+
+[[deck.keys]]
+key = 5
+label = "MUTE"
+color = "#c92a2a"
+keys = "mute"
+
+[[deck.keys]]
+key = 6
+label = "MIC\nMUTE"
+color = "#c92a2a"
+keys = "micmute"
+
+[[deck.keys]]
+key = 7
+label = "FILES"
+color = "#e67700"
+command = "xdg-open ~"
+
+[[deck.keys]]
+key = 8
+label = "GAME\nPAD"
+color = "#0b7285"
+mode = "gamepad"
+
+[[deck.keys]]
+key = 9
+label = "DRUM\nPAD"
+color = "#a61e4d"
+mode = "drum"
+
+[[deck.keys]]
+key = 11
+label = "UNDO"
+color = "#495057"
+keys = "ctrl+z"
+
+[[deck.keys]]
+key = 12
+label = "COPY"
+color = "#495057"
+keys = "ctrl+c"
+
+[[deck.keys]]
+key = 13
+label = "PASTE"
+color = "#495057"
+keys = "ctrl+v"
+
+[[deck.keys]]
+key = 14
+label = "LOCK"
+color = "#495057"
+keys = "super+l"
+
+# ------------------------------------------------------------- gamepad mode
+# The deck appears as a virtual Xbox-style controller. `input` is one of:
+#   a b x y lb rb lt rt select start guide l3 r3
+#   dpad_up dpad_down dpad_left dpad_right
+#   ls_up ls_down ls_left ls_right   rs_up rs_down rs_left rs_right
+# `label` and `color` are optional.
+[gamepad]
+name = "deckpad Virtual Gamepad"
+
+[[gamepad.keys]]
+key = 0
+input = "lb"
+[[gamepad.keys]]
+key = 1
+input = "dpad_up"
+[[gamepad.keys]]
+key = 2
+input = "rb"
+[[gamepad.keys]]
+key = 3
+input = "x"
+[[gamepad.keys]]
+key = 4
+input = "y"
+[[gamepad.keys]]
+key = 5
+input = "dpad_left"
+[[gamepad.keys]]
+key = 6
+input = "dpad_down"
+[[gamepad.keys]]
+key = 7
+input = "dpad_right"
+[[gamepad.keys]]
+key = 8
+input = "a"
+[[gamepad.keys]]
+key = 9
+input = "b"
+[[gamepad.keys]]
+key = 11
+input = "lt"
+[[gamepad.keys]]
+key = 12
+input = "select"
+[[gamepad.keys]]
+key = 13
+input = "start"
+[[gamepad.keys]]
+key = 14
+input = "rt"
+
+# ---------------------------------------------------------------- drum mode
+# The deck appears as an ALSA MIDI port; each pad sends a note.
+# Defaults are General MIDI drum notes on channel 10.
+[drum]
+port_name = "deckpad"
+channel = 10             # 1-16
+velocity = 110           # 1-127 (the keys are not pressure sensitive)
+# connect = "FLUID Synth"   # optional: auto-connect to this MIDI port (name or client:port)
+
+[[drum.pads]]
+key = 0
+note = 49
+label = "CRASH"
+color = "#f08c00"
+[[drum.pads]]
+key = 1
+note = 50
+label = "HI\nTOM"
+color = "#1971c2"
+[[drum.pads]]
+key = 2
+note = 47
+label = "MID\nTOM"
+color = "#1971c2"
+[[drum.pads]]
+key = 3
+note = 45
+label = "LOW\nTOM"
+color = "#1971c2"
+[[drum.pads]]
+key = 4
+note = 51
+label = "RIDE"
+color = "#f08c00"
+[[drum.pads]]
+key = 5
+note = 46
+label = "OPEN\nHAT"
+color = "#e8b800"
+[[drum.pads]]
+key = 6
+note = 42
+label = "HAT"
+color = "#e8b800"
+[[drum.pads]]
+key = 7
+note = 39
+label = "CLAP"
+color = "#ae3ec9"
+[[drum.pads]]
+key = 8
+note = 37
+label = "RIM"
+color = "#ae3ec9"
+[[drum.pads]]
+key = 9
+note = 56
+label = "COW\nBELL"
+color = "#ae3ec9"
+[[drum.pads]]
+key = 11
+note = 36
+label = "KICK"
+color = "#c92a2a"
+[[drum.pads]]
+key = 12
+note = 38
+label = "SNARE"
+color = "#2f9e44"
+[[drum.pads]]
+key = 13
+note = 38
+label = "SNARE"
+color = "#2f9e44"
+[[drum.pads]]
+key = 14
+note = 36
+label = "KICK"
+color = "#c92a2a"

@@ -1,0 +1,23 @@
+[package]
+name = "deckpad"
+version = "0.1.0"
+edition = "2024"
+description = "Lean Stream Deck daemon for Linux with gamepad and MIDI drum pad modes"
+license = "MPL-2.0"
+
+[dependencies]
+elgato-streamdeck = { path = "vendor/elgato-streamdeck" }
+# Pure-Rust hidraw backend: no libudev / hidapi C headers needed to build.
+hidapi = { version = "2.6", default-features = false, features = ["linux-native-basic-udev"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+ab_glyph = "0.2"
+evdev = "0.13"
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+ctrlc = { version = "3", features = ["termination"] }
+
+[profile.release]
+lto = "thin"
+strip = true
