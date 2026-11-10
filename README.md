@@ -7,7 +7,7 @@ cycle through from the deck itself:
 | --- | --- |
 | **deck** | Classic macro pad: key combos, media keys, shell commands |
 | **gamepad** | A virtual Xbox-style controller (uinput) |
-| **drum** | A MIDI drum pad (ALSA sequencer port, General MIDI drum notes) |
+| **drum** | A MIDI performance pad with a loop recorder (ALSA sequencer port) |
 
 ![Default layouts: deck, gamepad, drum](docs/layouts.png)
 
@@ -43,9 +43,23 @@ created the first time you enter the mode and stays plugged in until exit.
 **Drum.** Entering the mode creates a MIDI output port called `deckpad`.
 It makes no sound by itself: connect it to a synth, sampler or DAW
 (`aconnect -l` to list ports, `aconnect deckpad <target>` to wire it up, or
-set `drum.connect` in the config to do that automatically). Notes are sent on
-press and released on key-up, on channel 10 with a fixed velocity — the keys
-are not pressure sensitive.
+set `drum.connect` in the config to do that automatically).
+
+The default layout is a house / garage performance pad: four piano chords
+and two vocal stabs on top, an electronic kit underneath, and a loop
+recorder down the right-hand side.
+
+- **REC** starts a two-bar loop at 128 bpm with a click and records what you
+  play. The loop keeps cycling, so build the beat up a layer per pass. Press
+  again to stop recording while the loop carries on; again to overdub more.
+- **PLAY** stops and restarts the loop. **CLEAR** erases it.
+- Recorded hits snap to sixteenths; what you play live is never delayed.
+  Pads light up as the loop plays them.
+
+Tempo, length, grid, click, sounds (`drum.programs`) and every pad are in
+the config. A pad can be one note, a chord (`notes = [...]`) or a loop
+control, on any MIDI channel. Velocity is fixed per pad — the keys are not
+pressure sensitive.
 
 For sound without a DAW, [`contrib/fluidsynth.service`](contrib/fluidsynth.service)
 runs FluidSynth in the background; with `connect = "FLUID Synth"` under
@@ -54,6 +68,17 @@ runs FluidSynth in the background; with `connect = "FLUID Synth"` under
 **Deck.** Each key sends a key combo (`keys = "ctrl+shift+t"`, any evdev key
 name such as `volumeup` or `playpause`), runs a shell command, or jumps to a
 mode.
+
+## Latency
+
+Key presses are handled in microseconds: the input thread only sends the
+MIDI or controller event and queues the key repaint, and a separate thread
+does the (much slower) USB display writes. Every key face is rendered and
+compressed once per connection, not per press.
+
+For drum mode the synth's audio buffer matters far more than deckpad does.
+`contrib/fluidsynth.service` asks PipeWire for a 128-frame buffer (under
+3 ms); PipeWire's default for it is 40-90 ms.
 
 ## Configure
 
@@ -75,9 +100,9 @@ ignored. Developed and tested on a Stream Deck MK.2.
 ## Tests
 
 ```sh
-cargo test                 # parsing and config
-cargo test -- --ignored    # also creates a real virtual gamepad and MIDI port
-                           # and reads the events back (needs uinput, ALSA, aseqdump)
+cargo test                 # parsing, config and loop timing logic
+cargo test -- --ignored    # also drives a real virtual gamepad, MIDI port and Stream Deck
+                           # (needs uinput, ALSA, aseqdump; stop any running deckpad first)
 ```
 
 ## Built on

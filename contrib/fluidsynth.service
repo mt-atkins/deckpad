@@ -10,9 +10,13 @@ Description=FluidSynth software synthesizer
 After=pipewire.service
 
 [Service]
+# Audio buffer: 128 frames at 48 kHz is under 3 ms. Without this PipeWire gives
+# the synth a buffer of 40-90 ms, which is far too slow for finger drumming.
+# If you hear crackling, raise both this and audio.period-size to 256.
+Environment=PIPEWIRE_LATENCY=128/48000
 # stdin is held open by `sleep` so the synth keeps running without its
 # network command server (-s), which would listen on every interface.
-ExecStart=/bin/sh -c 'sleep infinity | exec /home/linuxbrew/.linuxbrew/bin/fluidsynth -a pipewire -m alsa_seq -o midi.alsa_seq.id=deckpad -o audio.period-size=256 -g 0.8 %h/.local/share/soundfonts/GeneralUser-GS.sf2'
+ExecStart=/bin/sh -c 'sleep infinity | exec /home/linuxbrew/.linuxbrew/bin/fluidsynth -a pipewire -r 48000 -m alsa_seq -o midi.alsa_seq.id=deckpad -o audio.period-size=128 -g 0.8 %h/.local/share/soundfonts/GeneralUser-GS.sf2'
 Restart=on-failure
 RestartSec=2
 

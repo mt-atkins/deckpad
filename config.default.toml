@@ -153,81 +153,129 @@ key = 14
 input = "rt"
 
 # ---------------------------------------------------------------- drum mode
-# The deck appears as an ALSA MIDI port; each pad sends a note.
-# Defaults are General MIDI drum notes on channel 10.
+# The deck appears as an ALSA MIDI port. The default layout is a house /
+# garage performance pad: piano chords and vocal stabs on top, an electronic
+# kit underneath, and a loop recorder down the right-hand side.
+#
+# Each pad is one of:
+#   note   = 36                  one note
+#   notes  = [45, 55, 60, 64]    a chord
+#   action = "rec"               loop control: rec | play | clear
+# with optional `channel` and `velocity` overriding the [drum] values.
+#
+# The loop:
+#   REC    starts a loop of `bars` bars at `bpm` with a click, and records what
+#          you play. It keeps cycling, so layer parts on each pass. Press again
+#          to stop recording (the loop keeps playing); again to overdub more.
+#   PLAY   stops / restarts the loop.
+#   CLEAR  erases it.
+# Recorded hits snap to the `quantize` grid; what you play live is never delayed.
 [drum]
 port_name = "deckpad"
-channel = 10             # 1-16
+channel = 10             # 1-16; channel 10 is drums in General MIDI
 velocity = 110           # 1-127 (the keys are not pressure sensitive)
 # connect = "FLUID Synth"   # optional: auto-connect to this MIDI port (name or client:port)
+bpm = 128
+bars = 2
+quantize = 16            # grid in notes per bar: 16 = sixteenths, 0 = off
+click = true             # metronome while recording
+
+# Sounds to select when the mode starts (General MIDI program numbers, 0-based).
+[[drum.programs]]
+channel = 10
+program = 26             # "Dance" kit (25 = 808/909, 0 = acoustic)
+[[drum.programs]]
+channel = 1
+program = 0              # grand piano
+[[drum.programs]]
+channel = 2
+program = 54             # synth voice
 
 [[drum.pads]]
 key = 0
-note = 49
-label = "CRASH"
-color = "#f08c00"
+label = "Am7"
+color = "#1971c2"
+notes = [45, 55, 60, 64]
+channel = 1
+velocity = 92
 [[drum.pads]]
 key = 1
-note = 50
-label = "HI\nTOM"
+label = "Fmaj7"
 color = "#1971c2"
+notes = [41, 57, 60, 64]
+channel = 1
+velocity = 92
 [[drum.pads]]
 key = 2
-note = 47
-label = "MID\nTOM"
+label = "C"
 color = "#1971c2"
+notes = [48, 55, 60, 64]
+channel = 1
+velocity = 92
 [[drum.pads]]
 key = 3
-note = 45
-label = "LOW\nTOM"
+label = "G"
 color = "#1971c2"
+notes = [43, 55, 59, 62]
+channel = 1
+velocity = 92
 [[drum.pads]]
 key = 4
-note = 51
-label = "RIDE"
-color = "#f08c00"
+label = "REC"
+color = "#e03131"
+action = "rec"
+
 [[drum.pads]]
 key = 5
-note = 46
-label = "OPEN\nHAT"
-color = "#e8b800"
+label = "VOX\nHI"
+color = "#ae3ec9"
+note = 76
+channel = 2
+velocity = 100
 [[drum.pads]]
 key = 6
-note = 42
-label = "HAT"
-color = "#e8b800"
+label = "VOX\nLO"
+color = "#ae3ec9"
+note = 72
+channel = 2
+velocity = 100
 [[drum.pads]]
 key = 7
-note = 39
-label = "CLAP"
-color = "#ae3ec9"
+label = "HAT"
+color = "#e8b800"
+note = 42
+velocity = 96
 [[drum.pads]]
 key = 8
-note = 37
-label = "RIM"
-color = "#ae3ec9"
+label = "OPEN\nHAT"
+color = "#e8b800"
+note = 46
+velocity = 96
 [[drum.pads]]
 key = 9
-note = 56
-label = "COW\nBELL"
-color = "#ae3ec9"
+label = "PLAY"
+color = "#2f9e44"
+action = "play"
+
 [[drum.pads]]
 key = 11
-note = 36
 label = "KICK"
-color = "#c92a2a"
+color = "#f76707"
+note = 36
+velocity = 120
 [[drum.pads]]
 key = 12
-note = 38
-label = "SNARE"
-color = "#2f9e44"
+label = "CLAP"
+color = "#f76707"
+note = 39
 [[drum.pads]]
 key = 13
-note = 38
-label = "SNARE"
-color = "#2f9e44"
+label = "SHAKE"
+color = "#f08c00"
+note = 70
+velocity = 90
 [[drum.pads]]
 key = 14
-note = 36
-label = "KICK"
-color = "#c92a2a"
+label = "CLEAR"
+color = "#495057"
+action = "clear"

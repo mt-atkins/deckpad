@@ -16,6 +16,7 @@ const PORT_TYPE_MIDI_GENERIC: c_uint = 1 << 1;
 const PORT_TYPE_APPLICATION: c_uint = 1 << 20;
 const EVENT_NOTEON: u8 = 6;
 const EVENT_NOTEOFF: u8 = 7;
+const EVENT_PGMCHANGE: u8 = 11;
 const QUEUE_DIRECT: u8 = 253;
 const ADDRESS_UNKNOWN: u8 = 253;
 const ADDRESS_SUBSCRIBERS: u8 = 254;
@@ -27,7 +28,7 @@ struct SeqAddr {
     port: u8,
 }
 
-/// Mirrors `snd_seq_event_t` (28 bytes) for note events.
+/// Mirrors `snd_seq_event_t` (28 bytes).
 #[repr(C)]
 struct SeqEvent {
     kind: u8,
@@ -37,7 +38,8 @@ struct SeqEvent {
     time: [u32; 2],
     source: SeqAddr,
     dest: SeqAddr,
-    /// `snd_seq_ev_note_t`: channel, note, velocity, off_velocity, duration.
+    /// Notes use `snd_seq_ev_note_t` (channel, note, velocity, ...); program
+    /// changes use `snd_seq_ev_ctrl_t` (channel, 3 unused, u32 param, i32 value).
     data: [u8; 12],
 }
 
@@ -110,8 +112,20 @@ impl MidiOut {
         data[0] = channel;
         data[1] = note;
         data[2] = if on { velocity } else { 0 };
+        self.send(if on { EVENT_NOTEON } else { EVENT_NOTEOFF }, data)
+    }
+
+    /// Selects an instrument (or, on channel 10, a drum kit). `channel` is 0-15.
+    pub fn program(&self, channel: u8, program: u8) -> Result<()> {
+        let mut data = [0u8; 12];
+        data[0] = channel;
+        data[8..12].copy_from_slice(&(program as i32).to_ne_bytes());
+        self.send(EVENT_PGMCHANGE, data)
+    }
+
+    fn send(&self, kind: u8, data: [u8; 12]) -> Result<()> {
         let mut event = SeqEvent {
-            kind: if on { EVENT_NOTEON } else { EVENT_NOTEOFF },
+            kind,
             flags: 0,
             tag: 0,
             queue: QUEUE_DIRECT,
@@ -152,6 +166,7 @@ mod tests {
         let midi = MidiOut::new("deckpad-test", None).unwrap();
         let mut dump = Command::new("aseqdump").args(["-p", "deckpad-test"]).stdout(Stdio::piped()).spawn().unwrap();
         std::thread::sleep(Duration::from_millis(400));
+        midi.program(9, 26).unwrap();
         midi.note(true, 9, 36, 110).unwrap();
         midi.note(false, 9, 36, 110).unwrap();
         std::thread::sleep(Duration::from_millis(300));
@@ -159,6 +174,7 @@ mod tests {
         let out = String::from_utf8(dump.wait_with_output().unwrap().stdout).unwrap();
         let line = |kind: &str| out.lines().find(|l| l.contains(kind)).unwrap_or_else(|| panic!("no '{kind}' in:\n{out}")).to_string();
         assert!(line("Note on").contains("9, note 36, velocity 110"), "{out}");
+        assert!(line("Program change").contains("9, program 26"), "{out}");
         assert!(line("Note off").contains("9, note 36"), "{out}");
     }
 }

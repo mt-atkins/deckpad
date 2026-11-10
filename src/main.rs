@@ -3,27 +3,31 @@
 mod config;
 mod gamepad;
 mod keyboard;
+mod looper;
 mod midi;
+mod painter;
 mod render;
 
 use anyhow::{Context, Result, bail};
-use config::{Config, Mode, parse_color};
+use config::{Config, LoopControl, Mode, parse_color};
 use elgato_streamdeck::images::convert_image;
 use elgato_streamdeck::info::Kind;
-use elgato_streamdeck::{DeviceStateUpdate, StreamDeck, StreamDeckError, list_devices, new_hidapi, refresh_device_list};
+use elgato_streamdeck::{DeviceStateReader, DeviceStateUpdate, StreamDeck, StreamDeckError, list_devices, new_hidapi, refresh_device_list};
 use evdev::KeyCode;
 use gamepad::{Gamepad, PadInput};
 use hidapi::HidError;
 use image::{DynamicImage, RgbImage};
 use keyboard::Keyboard;
+use looper::{Click, LoopNote, Looper};
 use midi::MidiOut;
+use painter::Painter;
 use render::Renderer;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -54,7 +58,9 @@ enum Action {
     Combo(Vec<KeyCode>),
     Command(String),
     Pad(PadInput),
-    Note(u8),
+    /// Note-ons for one pad (a single note or a chord).
+    Notes(Vec<LoopNote>),
+    Loop(LoopControl),
     None,
 }
 
@@ -103,7 +109,16 @@ fn build_layout(cfg: &Config, mode: Mode) -> Result<Layout> {
         }
         Mode::Drum => {
             for p in &cfg.drum.pads {
-                layout.insert(p.key, Binding { label: p.label.clone(), color: color_or(&p.color, DEFAULT_COLOR)?, action: Action::Note(p.note) });
+                let action = match p.action {
+                    Some(control) => Action::Loop(control),
+                    None => {
+                        let channel = p.channel.unwrap_or(cfg.drum.channel) - 1;
+                        let velocity = p.velocity.unwrap_or(cfg.drum.velocity);
+                        let notes = p.note.into_iter().chain(p.notes.iter().flatten().copied());
+                        Action::Notes(notes.map(|note| LoopNote { on: true, channel, note, velocity, key: Some(p.key) }).collect())
+                    }
+                };
+                layout.insert(p.key, Binding { label: p.label.clone(), color: color_or(&p.color, DEFAULT_COLOR)?, action });
             }
         }
     }
@@ -115,8 +130,8 @@ fn build_layout(cfg: &Config, mode: Mode) -> Result<Layout> {
 
 /// Pre-encoded images for one key, ready to send to the device.
 struct Face {
-    normal: Vec<u8>,
-    pressed: Vec<u8>,
+    normal: Arc<Vec<u8>>,
+    pressed: Arc<Vec<u8>>,
 }
 
 struct App {
@@ -124,11 +139,16 @@ struct App {
     renderer: Renderer,
     layouts: HashMap<u8, Layout>,
     mode: Mode,
-    faces: HashMap<u8, Face>,
+    /// Per mode, per key; encoded once per connection so mode switches and
+    /// key flashes never render or compress anything.
+    faces: HashMap<u8, HashMap<u8, Face>>,
+    key_count: u8,
+    painter: Option<Painter>,
     held: HashMap<u8, Action>,
     keyboard: Option<Keyboard>,
     gamepad: Option<Gamepad>,
     midi: Option<MidiOut>,
+    looper: Looper,
 }
 
 fn mode_index(mode: Mode) -> u8 {
@@ -148,7 +168,10 @@ impl App {
             layouts.insert(mode_index(m), build_layout(&cfg, m)?);
         }
         let renderer = Renderer::new(cfg.font.as_deref());
-        Ok(App { cfg, renderer, layouts, mode, faces: HashMap::new(), held: HashMap::new(), keyboard: None, gamepad: None, midi: None })
+        // The click is a side-stick on the drum channel.
+        let click = cfg.drum.click.then_some(Click { channel: cfg.drum.channel - 1, note: 37 });
+        let looper = Looper::new(cfg.drum.bpm, cfg.drum.bars, cfg.drum.quantize, click);
+        Ok(App { cfg, renderer, layouts, mode, faces: HashMap::new(), key_count: 0, painter: None, held: HashMap::new(), keyboard: None, gamepad: None, midi: None, looper })
     }
 
     fn layout(&self) -> &Layout {
@@ -192,63 +215,76 @@ impl App {
         }
     }
 
-    fn enter_mode(&mut self, deck: &StreamDeck, mode: Mode) -> Result<()> {
+    /// Renders and encodes every key face of every mode for this device.
+    fn build_faces(&mut self, kind: Kind) -> Result<()> {
+        let size = kind.key_image_format().size.0 as u32;
+        self.key_count = kind.key_count();
+        self.faces.clear();
+        for mode in MODES {
+            let mut faces = HashMap::new();
+            for (key, b) in &self.layouts[&mode_index(mode)] {
+                let encode = |lit| -> Result<Arc<Vec<u8>>> {
+                    let image = DynamicImage::ImageRgb8(self.renderer.face(size, &b.label, b.color, lit));
+                    Ok(Arc::new(convert_image(kind, image)?))
+                };
+                faces.insert(*key, Face { normal: encode(false)?, pressed: encode(true)? });
+            }
+            self.faces.insert(mode_index(mode), faces);
+        }
+        Ok(())
+    }
+
+    fn enter_mode(&mut self, mode: Mode) {
         self.release_all();
         self.mode = mode;
         self.prepare_mode();
-
-        let kind = deck.kind();
-        let size = kind.key_image_format().size.0 as u32;
-        self.faces.clear();
-        for key in 0..kind.key_count() {
-            match self.layout().get(&key) {
-                Some(b) => {
-                    let encode = |pressed| convert_image(kind, DynamicImage::ImageRgb8(self.renderer.face(size, &b.label, b.color, pressed)));
-                    let face = Face { normal: encode(false)?, pressed: encode(true)? };
-                    deck.write_image(key, &face.normal)?;
-                    self.faces.insert(key, face);
-                }
-                None => deck.clear_button_image(key)?,
+        if let (Mode::Drum, Some(midi)) = (mode, &self.midi) {
+            // Sent on every entry, so a synth connected since last time gets them too.
+            for p in &self.cfg.drum.programs {
+                log_err("midi", midi.program(p.channel - 1, p.program));
             }
         }
-        deck.flush()?;
-        println!("deckpad: {} mode", mode.id());
-        Ok(())
-    }
-
-    fn show(&self, deck: &StreamDeck, key: u8, pressed: bool) -> Result<()> {
-        if let Some(face) = self.faces.get(&key) {
-            deck.write_image(key, if pressed { &face.pressed } else { &face.normal })?;
-            deck.flush()?;
+        for key in 0..self.key_count {
+            self.paint(key, false);
         }
-        Ok(())
+        println!("deckpad: {} mode", mode.id());
     }
 
-    fn key_down(&mut self, deck: &StreamDeck, key: u8) -> Result<()> {
+    /// Queues a key's lit or normal image (or a blank, for unbound keys).
+    /// Never blocks: the painter thread does the USB writes.
+    fn paint(&self, key: u8, lit: bool) {
+        let Some(painter) = &self.painter else { return };
+        match self.faces.get(&mode_index(self.mode)).and_then(|f| f.get(&key)) {
+            Some(face) => painter.image(key, if lit { face.pressed.clone() } else { face.normal.clone() }),
+            None => painter.clear(key),
+        }
+    }
+
+    fn key_down(&mut self, key: u8) {
         let Some(action) = self.layout().get(&key).map(|b| b.action.clone()) else {
-            return Ok(());
+            return;
         };
         match &action {
-            Action::CycleMode => return self.enter_mode(deck, self.mode.next()),
-            Action::SetMode(mode) => return self.enter_mode(deck, *mode),
+            Action::CycleMode => return self.enter_mode(self.mode.next()),
+            Action::SetMode(mode) => return self.enter_mode(*mode),
+            Action::Loop(control) => return self.loop_control(key, *control),
             _ => {}
         }
         // Act first, repaint second: the output event is what needs low latency.
-        self.apply(&action, true);
+        self.apply(key, &action, true);
         self.held.insert(key, action);
-        self.show(deck, key, true)
+        self.paint(key, true);
     }
 
-    fn key_up(&mut self, deck: &StreamDeck, key: u8) -> Result<()> {
+    fn key_up(&mut self, key: u8) {
         // Keys pressed before a mode switch are no longer in `held`; ignore their release.
         if let Some(action) = self.held.remove(&key) {
-            self.apply(&action, false);
-            self.show(deck, key, false)?;
+            self.apply(key, &action, false);
+            self.paint(key, false);
         }
-        Ok(())
     }
 
-    fn apply(&mut self, action: &Action, pressed: bool) {
+    fn apply(&mut self, key: u8, action: &Action, pressed: bool) {
         match action {
             Action::Combo(keys) => {
                 if let Some(kb) = &mut self.keyboard {
@@ -261,46 +297,135 @@ impl App {
                     log_err("gamepad", pad.set(*input, pressed));
                 }
             }
-            Action::Note(note) => {
-                if let Some(midi) = &self.midi {
-                    log_err("midi", midi.note(pressed, self.cfg.drum.channel - 1, *note, self.cfg.drum.velocity));
+            Action::Notes(notes) => {
+                let now = Instant::now();
+                if pressed {
+                    self.send_midi(notes);
+                    self.looper.pad_down(now, key, notes);
+                } else {
+                    let offs: Vec<LoopNote> = notes.iter().map(|n| LoopNote { on: false, velocity: 0, ..*n }).collect();
+                    self.send_midi(&offs);
+                    self.looper.pad_up(now, key);
                 }
             }
             _ => {}
         }
     }
 
-    /// Releases everything still held, so no button or note sticks.
-    fn release_all(&mut self) {
-        for (_, action) in std::mem::take(&mut self.held) {
-            self.apply(&action, false);
+    fn send_midi(&self, notes: &[LoopNote]) {
+        if let Some(midi) = &self.midi {
+            for n in notes {
+                log_err("midi", midi.note(n.on, n.channel, n.note, n.velocity));
+            }
         }
     }
 
-    /// Runs until the device fails (returns Err) or shutdown is requested.
-    fn session(&mut self, deck: StreamDeck) -> Result<()> {
-        deck.set_brightness(self.cfg.brightness.min(100))?;
-        self.enter_mode(&deck, self.mode)?;
-        let deck = Arc::new(deck);
-        let reader = deck.get_reader();
-        while RUNNING.load(Ordering::Relaxed) {
-            let updates = match reader.read(Some(Duration::from_millis(100))) {
-                Ok(updates) => updates,
-                // A signal (Ctrl-C) interrupts the blocking read; that is not a device
-                // fault. Loop again so the shutdown flag is seen once the handler sets it.
-                Err(e) if is_interrupted(&e) || !RUNNING.load(Ordering::Relaxed) => continue,
-                Err(e) => return Err(e.into()),
-            };
-            for update in updates {
-                match update {
-                    DeviceStateUpdate::ButtonDown(key) => self.key_down(&deck, key)?,
-                    DeviceStateUpdate::ButtonUp(key) => self.key_up(&deck, key)?,
-                    _ => {}
-                }
+    /// Handles a REC / PLAY / CLEAR press and relights the loop keys.
+    fn loop_control(&mut self, key: u8, control: LoopControl) {
+        let now = Instant::now();
+        let offs = match control {
+            LoopControl::Rec => {
+                self.looper.toggle_record(now);
+                Vec::new()
+            }
+            LoopControl::Play => self.looper.toggle_play(now),
+            LoopControl::Clear => self.looper.clear(now),
+        };
+        self.send_midi(&offs);
+        if control == LoopControl::Clear {
+            // Momentary key: light it while held like a normal pad.
+            self.held.insert(key, Action::None);
+            self.paint(key, true);
+        }
+        for n in &offs {
+            if let Some(k) = n.key.filter(|k| !self.held.contains_key(k)) {
+                self.paint(k, false);
             }
         }
-        deck.reset()?;
+        self.show_loop_state();
+    }
+
+    /// REC is lit while recording, PLAY while the loop runs.
+    fn show_loop_state(&self) {
+        if self.mode != Mode::Drum {
+            return;
+        }
+        for (key, binding) in self.layout() {
+            match binding.action {
+                Action::Loop(LoopControl::Rec) => self.paint(*key, self.looper.is_recording()),
+                Action::Loop(LoopControl::Play) => self.paint(*key, self.looper.is_running()),
+                _ => {}
+            }
+        }
+    }
+
+    /// Plays whatever the loop has due, then flashes the pads it triggered.
+    fn run_loop(&mut self) {
+        let due = self.looper.poll(Instant::now());
+        self.send_midi(&due);
+        for n in &due {
+            // A pad the player is holding stays lit.
+            if let Some(key) = n.key.filter(|k| !self.held.contains_key(k)) {
+                self.paint(key, n.on);
+            }
+        }
+    }
+
+    /// Releases everything still held and stops the loop, so no button or note sticks.
+    fn release_all(&mut self) {
+        for (key, action) in std::mem::take(&mut self.held) {
+            self.apply(key, &action, false);
+        }
+        let offs = self.looper.stop(Instant::now());
+        self.send_midi(&offs);
+    }
+
+    /// One pass of the main loop: wait for key events (no longer than until the
+    /// loop's next note is due), handle them, then play what the loop has due.
+    fn tick(&mut self, reader: &DeviceStateReader) -> Result<()> {
+        let idle = Duration::from_millis(100);
+        let timeout = self.looper.next_due(Instant::now()).map_or(idle, |d| d.min(idle));
+        let updates = match reader.read(Some(timeout)) {
+            Ok(updates) => updates,
+            // A signal (Ctrl-C) interrupts the blocking read; that is not a device
+            // fault. Return so the caller sees the shutdown flag once it is set.
+            Err(e) if is_interrupted(&e) || !RUNNING.load(Ordering::Relaxed) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        for update in updates {
+            match update {
+                DeviceStateUpdate::ButtonDown(key) => self.key_down(key),
+                DeviceStateUpdate::ButtonUp(key) => self.key_up(key),
+                _ => {}
+            }
+        }
+        self.run_loop();
+        if self.painter.as_ref().is_some_and(|p| p.failed()) {
+            bail!("writing to the deck failed");
+        }
         Ok(())
+    }
+
+    /// Runs until the device fails (returns Err) or shutdown is requested.
+    /// `input` is read on this thread; `output` is handed to the painter thread.
+    fn session(&mut self, input: StreamDeck, output: StreamDeck) -> Result<()> {
+        output.set_brightness(self.cfg.brightness.min(100))?;
+        self.build_faces(input.kind())?;
+        self.painter = Some(Painter::spawn(output));
+        self.enter_mode(self.mode);
+        let reader = Arc::new(input).get_reader();
+        let mut result = Ok(());
+        while RUNNING.load(Ordering::Relaxed) && result.is_ok() {
+            result = self.tick(&reader);
+        }
+        self.release_all();
+        if let Some(painter) = self.painter.take() {
+            if result.is_ok() {
+                painter.reset();
+            }
+            // Dropping the painter waits for its queue to drain.
+        }
+        result
     }
 }
 
@@ -409,12 +534,12 @@ fn run() -> Result<()> {
             continue;
         };
         waiting = false;
-        match StreamDeck::connect(&hid, kind, &serial) {
-            Ok(deck) => {
+        // Two handles to the same device: one to read keys, one to paint them.
+        let handles = StreamDeck::connect(&hid, kind, &serial).and_then(|a| Ok((a, StreamDeck::connect(&hid, kind, &serial)?)));
+        match handles {
+            Ok((input, output)) => {
                 println!("deckpad: connected to {} ({serial})", describe(kind));
-                let result = app.session(deck);
-                app.release_all();
-                if let Err(e) = result {
+                if let Err(e) = app.session(input, output) {
                     eprintln!("deckpad: device error: {e:#}; reconnecting");
                     sleep_while_running(Duration::from_secs(1));
                 }
@@ -460,8 +585,110 @@ mod tests {
         }
     }
 
+    /// Hardware-in-the-loop: records one kick on a real Stream Deck (key presses
+    /// simulated in software) and checks the loop replays it into a real MIDI
+    /// port, on time. Needs a deck, ALSA and aseqdump, and no other deckpad
+    /// running: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn loop_replays_on_a_real_deck() {
+        let mut cfg: Config = toml::from_str(config::DEFAULT_CONFIG).unwrap();
+        cfg.drum.port_name = "deckpad-looptest".into();
+        cfg.drum.connect = None;
+        cfg.drum.click = false;
+        cfg.drum.bpm = 120.0; // one bar = 2 s
+        cfg.drum.bars = 1;
+        let key_of = |cfg: &Config, label: &str| cfg.drum.pads.iter().find(|p| p.label == label).unwrap().key;
+        let (rec, kick, clear) = (key_of(&cfg, "REC"), key_of(&cfg, "KICK"), key_of(&cfg, "CLEAR"));
+
+        let hid = new_hidapi().unwrap();
+        let (kind, serial) = list_devices(&hid).into_iter().next().expect("no Stream Deck connected");
+        let reader = Arc::new(StreamDeck::connect(&hid, kind, &serial).unwrap()).get_reader();
+        let mut app = App::new(cfg, Mode::Drum).unwrap();
+        app.build_faces(kind).unwrap();
+        app.painter = Some(Painter::spawn(StreamDeck::connect(&hid, kind, &serial).unwrap()));
+        app.enter_mode(Mode::Drum);
+
+        let mut dump = Command::new("aseqdump").args(["-p", "deckpad-looptest"]).stdout(Stdio::piped()).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+
+        let t0 = Instant::now();
+        app.key_down(rec);
+        assert!(app.looper.is_recording());
+        // Scripted presses: (time, key, down).
+        let mut script = vec![(500, kick, true), (560, kick, false), (5200, clear, true)].into_iter().peekable();
+        let mut worst_late = Duration::ZERO;
+        while let Some(&(at_ms, key, down)) = script.peek() {
+            if t0.elapsed() >= Duration::from_millis(at_ms) {
+                script.next();
+                if down { app.key_down(key) } else { app.key_up(key) }
+                continue;
+            }
+            // When the loop next owes a note; after the tick, how far past that are we?
+            let now = Instant::now();
+            let target = app.looper.next_due(now).map(|d| now + d);
+            app.tick(&reader).unwrap();
+            if let Some(late) = target.and_then(|t| Instant::now().checked_duration_since(t)) {
+                worst_late = worst_late.max(late);
+            }
+        }
+        assert!(!app.looper.is_running());
+        std::thread::sleep(Duration::from_millis(300));
+        dump.kill().unwrap();
+        app.painter.take().unwrap().reset();
+        let out = String::from_utf8(dump.wait_with_output().unwrap().stdout).unwrap();
+        let count = |kind: &str| out.lines().filter(|l| l.contains(kind) && l.contains("note 36")).count();
+        // One live hit, then replays at 2.5 s and 4.5 s.
+        assert_eq!((count("Note on"), count("Note off")), (3, 3), "{out}");
+        println!("worst loop lateness: {worst_late:?}");
+        assert!(worst_late < Duration::from_millis(20), "loop ran {worst_late:?} late");
+    }
+
     #[test]
     fn modes_cycle_through_all_three() {
         assert_eq!(Mode::Deck.next().next().next(), Mode::Deck);
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// Prints what a key press costs on the input thread versus what the
+    /// painter thread absorbs, on the connected deck. `cargo test --release
+    /// -- --ignored --nocapture press_cost` (stop any running deckpad first).
+    #[test]
+    #[ignore]
+    fn press_cost() {
+        let mut cfg: Config = toml::from_str(config::DEFAULT_CONFIG).unwrap();
+        cfg.drum.port_name = "deckpad-bench".into();
+        cfg.drum.connect = None;
+        let chord = cfg.drum.pads.iter().find(|p| p.notes.is_some()).unwrap().key;
+        let hid = new_hidapi().unwrap();
+        let (kind, serial) = list_devices(&hid).into_iter().next().expect("no Stream Deck connected");
+        let mut app = App::new(cfg, Mode::Drum).unwrap();
+        let t = Instant::now();
+        app.build_faces(kind).unwrap();
+        println!("encode all faces (once per connection): {:?}", t.elapsed());
+        app.painter = Some(Painter::spawn(StreamDeck::connect(&hid, kind, &serial).unwrap()));
+        app.enter_mode(Mode::Drum);
+        app.painter.as_ref().unwrap().sync();
+
+        let (mut total, mut worst, mut paint_worst) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        for _ in 0..200 {
+            let t = Instant::now();
+            app.key_down(chord); // four MIDI notes + queue a repaint
+            let down = t.elapsed();
+            let t = Instant::now();
+            app.painter.as_ref().unwrap().sync();
+            paint_worst = paint_worst.max(t.elapsed());
+            app.key_up(chord);
+            app.painter.as_ref().unwrap().sync();
+            total += down;
+            worst = worst.max(down);
+        }
+        println!("chord press on input thread: avg {:?}, worst {:?}", total / 200, worst);
+        println!("repaint on painter thread:   worst {paint_worst:?}");
+        app.painter.take().unwrap().reset();
     }
 }
