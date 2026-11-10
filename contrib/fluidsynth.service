@@ -1,0 +1,20 @@
+# systemd user unit: FluidSynth as a sound source for deckpad's drum mode.
+# Needs fluidsynth and a General MIDI soundfont; adjust the two paths in
+# ExecStart to match your system (these are Homebrew's and GeneralUser GS).
+# Install:
+#   cp contrib/fluidsynth.service ~/.config/systemd/user/
+#   systemctl --user enable --now fluidsynth
+# Then set `connect = "FLUID Synth"` under [drum] in the deckpad config.
+[Unit]
+Description=FluidSynth software synthesizer
+After=pipewire.service
+
+[Service]
+# stdin is held open by `sleep` so the synth keeps running without its
+# network command server (-s), which would listen on every interface.
+ExecStart=/bin/sh -c 'sleep infinity | exec /home/linuxbrew/.linuxbrew/bin/fluidsynth -a pipewire -m alsa_seq -o midi.alsa_seq.id=deckpad -o audio.period-size=256 -g 0.8 %h/.local/share/soundfonts/GeneralUser-GS.sf2'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

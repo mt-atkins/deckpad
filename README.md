@@ -47,6 +47,10 @@ set `drum.connect` in the config to do that automatically). Notes are sent on
 press and released on key-up, on channel 10 with a fixed velocity — the keys
 are not pressure sensitive.
 
+For sound without a DAW, [`contrib/fluidsynth.service`](contrib/fluidsynth.service)
+runs FluidSynth in the background; with `connect = "FLUID Synth"` under
+`[drum]` the pads play through it as soon as you enter the mode.
+
 **Deck.** Each key sends a key combo (`keys = "ctrl+shift+t"`, any evdev key
 name such as `volumeup` or `playpause`), runs a shell command, or jumps to a
 mode.
